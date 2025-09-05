@@ -4,6 +4,7 @@
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"/>
 <title>NORAD Vector - Enhanced Edition</title>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
 <style>
 :root{
   --bg:#050a14;
@@ -72,6 +73,7 @@
 .wargames{
   --bg:#000000;
   --cyan:#00ff00; --green:#00ff00; --mag:#ff0000; --amber:#ffff00; --yellow:#ffffff; --red:#ff0000;
+  --font-main:'Press Start 2P', monospace;
 }
 
 /* Pixelated rendering for retro themes.  Applying image‑rendering on the 
@@ -1398,6 +1400,7 @@ const AudioSys = {
 const S = {
   turn: 1,
   defcon: 5,
+  lastDefcon: 5,
   phase: 'PLAYER',
   actionsRemaining: 1,
   paused: false,
@@ -2045,6 +2048,20 @@ const COSTS = {
   // Cost to build one submarine.  Each submarine allows a single instant strike.
   submarine: { production: 40, uranium: 10, intel: 10 },
   submarine_launch: { production: 20, uranium: 0, intel: 5 }
+};
+
+// Research costs shared by player and AI so both factions follow the same
+// technology pricing and prerequisites.
+const TECH_COSTS = {
+  better_missiles: 10,
+  radar: 10,
+  miniaturization: 10,
+  mirv: 20,
+  stealth: 20,
+  emp: 20,
+  submarines: 30,
+  laser: 30,
+  mt100: 30
 };
 
 function canAfford(nation, cost) {
@@ -4011,6 +4028,11 @@ function updateDisplay() {
   // from calm blue/green at DEFCON 5 to intense red at DEFCON 1.
   updateDefconUIColor();
 
+  if (S.defcon !== S.lastDefcon) {
+    showDefconChange(S.defcon);
+    S.lastDefcon = S.defcon;
+  }
+
   // Victory countdown display (survival victory)
   const turnsToVictory = 50 - S.turn;
   const existingVC = document.getElementById('victoryCountdown');
@@ -4102,6 +4124,34 @@ function updateDefconUIColor() {
   if (hud) {
     hud.style.borderColor = colour;
   }
+}
+
+function showDefconChange(level) {
+  const existing = document.getElementById('defconOverlay');
+  if (existing) existing.remove();
+  const colours = {
+    5: 'var(--cyan)',
+    4: 'var(--green)',
+    3: 'var(--yellow)',
+    2: 'var(--amber)',
+    1: 'var(--red)'
+  };
+  const div = document.createElement('div');
+  div.id = 'defconOverlay';
+  div.style.cssText = `
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    font-size: 72px;
+    color: ${colours[level] || 'var(--cyan)'};
+    text-shadow: 0 0 20px ${colours[level] || 'var(--cyan)'};
+    pointer-events: none;
+    z-index: 10000;
+  `;
+  div.textContent = 'DEFCON ' + level;
+  document.body.appendChild(div);
+  setTimeout(() => div.remove(), 1500);
 }
 
 function updateScoreboard() {
@@ -4258,11 +4308,7 @@ function actBuild() {
 }
 
 function actResearch() {
-  const costs = {
-    better_missiles: 10, radar: 10, miniaturization: 10,
-    mirv: 20, stealth: 20, emp: 20, submarines: 30,
-    laser: 30, mt100: 30
-  };
+  const costs = TECH_COSTS;
   // Use a dedicated research sound effect to distinguish this action from
   // generic button presses.  The melodic twinkle reinforces the sense of
   // progress when starting a research session.
@@ -4371,7 +4417,7 @@ function actImmigration() {
   let html = '<div class="modal-grid">';
   html += `<button class="modal-btn" data-k="skilled">
     SKILLED IMMIGRATION<br>
-    <small>-5% pop → target, +15 instab, +1 def<br>Cost: 10 PROD, 5 INTEL</small>
+        <small>Steal 5% pop from target → you, +15 instab (target), +1 def (you)<br>Cost: 10 PROD, 5 INTEL</small>
   </button>`;
   html += `<button class="modal-btn" data-k="mass">
     MASS IMMIGRATION<br>
@@ -4407,24 +4453,23 @@ function actImmigration() {
         switch(mode) {
           case 'skilled':
             if (canAfford(player, COSTS.immigration_skilled)) {
-              const amt = Math.floor(player.population * 0.05);
-              player.population -= amt;
-              t.population += amt;
-              // Record incoming migrants to the target nation
-              t.immigrants = (t.immigrants || 0) + amt;
-              // Track migrant flow statistics for intel reports: count this turn and cumulative
-              t.migrantsThisTurn = (t.migrantsThisTurn || 0) + amt;
-              t.migrantsTotal = (t.migrantsTotal || 0) + amt;
+              const intelDiff = (player.intel || 0) - (t.intel || 0);
+              let pct = 0.05 + intelDiff * 0.0002;
+              pct = Math.min(0.07, Math.max(0.03, pct));
+              const amt = Math.max(1, Math.floor(t.population * pct));
+              t.population = Math.max(0, t.population - amt);
+              player.population += amt;
+              player.immigrants = (player.immigrants || 0) + amt;
+              t.emigrants = (t.emigrants || 0) + amt;
+
               t.instability = (t.instability || 0) + 15;
-              t.defense += 1;
+              player.defense += 1;
+
               pay(player, COSTS.immigration_skilled);
-              log(`Skilled immigration: ${amt}M → ${t.name} (+15 instab, +1 def)`);
+              log(`Skilled immigration: +${amt}M from ${t.name} (+15 instab to ${t.name}, +1 def to you)`);
               success = true;
-              // Add a persistent immigration icon at the target nation using the player's colour.
-              // Persisting icons remain until the destination is destroyed, making the influx
-              // of skilled workers visually evident on the map.
-              addImmigrationIcon(t.lon ?? 0, t.lat ?? 0, player.color, true);
-              // Play a dedicated sound effect for immigration
+
+              addImmigrationIcon(player.lon ?? 0, player.lat ?? 0, player.color, true);
               AudioSys.playSFX('immigration');
             }
             break;
@@ -4695,6 +4740,92 @@ function actIntel() {
   });
 }
 
+// Shared diplomacy action handler so AI and players obey identical costs and effects
+function performDiplomaticAction(actor, target, mode) {
+  const isPlayer = actor === PlayerManager.get();
+  switch(mode) {
+    case 'truce':
+      actor.treaties = actor.treaties || {};
+      target.treaties = target.treaties || {};
+      actor.treaties[target.id] = {truceTurns: 2};
+      target.treaties[actor.id] = {truceTurns: 2};
+      log(isPlayer ? `Truce declared with ${target.name} (2 turns)` : `${actor.name} declares truce with ${target.name} (2 turns)`);
+      return true;
+
+    case 'trade':
+      if (actor.sanctioned || actor.production < 10) return false;
+      actor.production -= 10;
+      actor.uranium += 5;
+      log(isPlayer ? `Trade with ${target.name}: -10 PROD, +5 URANIUM` : `${actor.name} trades with ${target.name}`);
+      return true;
+
+    case 'alliance':
+      if (actor.intel >= 40 && actor.production >= 10) {
+        actor.intel -= 40;
+        actor.production -= 10;
+        actor.treaties = actor.treaties || {};
+        target.treaties = target.treaties || {};
+        actor.treaties[target.id] = {alliance: true, truceTurns: 999};
+        target.treaties[actor.id] = {alliance: true, truceTurns: 999};
+        log(isPlayer ? `Alliance formed with ${target.name}!` : `${actor.name} forms alliance with ${target.name}`);
+        return true;
+      }
+      return false;
+
+    case 'sanction':
+      if (actor.intel >= 15) {
+        actor.intel -= 15;
+        target.sanctioned = true;
+        target.sanctionTurns = 5;
+        log(isPlayer ? `Trade sanctions imposed on ${target.name} (5 turns)` : `${actor.name} sanctions ${target.name} (5 turns)`);
+        return true;
+      }
+      return false;
+
+    case 'pact':
+      if (actor.intel >= 15) {
+        actor.intel -= 15;
+        actor.treaties = actor.treaties || {};
+        target.treaties = target.treaties || {};
+        actor.treaties[target.id] = {truceTurns: 5};
+        target.treaties[actor.id] = {truceTurns: 5};
+        log(isPlayer ? `Non-aggression pact with ${target.name} (5 turns)` : `${actor.name} signs non-aggression pact with ${target.name} (5 turns)`);
+        return true;
+      }
+      return false;
+
+    case 'aid':
+      if (actor.production >= 20) {
+        actor.production -= 20;
+        target.instability = Math.max(0, (target.instability || 0) - 10);
+        log(isPlayer ? `Economic aid sent to ${target.name}: -10 instability` : `${actor.name} sends economic aid to ${target.name}`);
+        return true;
+      }
+      return false;
+
+    case 'propaganda':
+      if (actor.intel >= 15) {
+        actor.intel -= 15;
+        target.intel = Math.max(0, (target.intel || 0) - 10);
+        actor.intel += 5;
+        log(isPlayer ? `Propaganda campaign against ${target.name}: drained 10 intel, gained 5 intel` : `${actor.name} runs propaganda against ${target.name}`);
+        return true;
+      }
+      return false;
+
+    case 'env':
+      if (actor.production >= 15 && actor.intel >= 60) {
+        actor.production -= 15;
+        actor.intel -= 60;
+        target.environmentPenaltyTurns = (target.environmentPenaltyTurns || 0) + 5;
+        log(isPlayer ? `Environmental treaty with ${target.name}: production/uranium reduced for 5 turns` : `${actor.name} enforces environmental treaty on ${target.name}`);
+        return true;
+      }
+      return false;
+  }
+  return false;
+}
+
 function actDiplomacy() {
   // A two-tone handshake sound signals the start of diplomatic negotiations.
   AudioSys.playSFX('diplomacy');
@@ -4818,105 +4949,9 @@ function actDiplomacy() {
       }
       
       closeModal();
-      
+
       selectTarget('SELECT NATION', t => {
-        let success = false;
-        
-        switch(mode) {
-          case 'truce':
-            player.treaties = player.treaties || {};
-            player.treaties[t.id] = {truceTurns: 2};
-            t.treaties = t.treaties || {};
-            t.treaties[player.id] = {truceTurns: 2};
-            log(`Truce declared with ${t.name} (2 turns)`);
-            success = true;
-            break;
-            
-          case 'trade':
-            // Can't trade if currently sanctioned
-            if (player.sanctioned) {
-              log('Cannot trade while sanctioned!', 'warning');
-              break;
-            }
-            if (player.production >= 10) {
-              player.production -= 10;
-              player.uranium += 5;
-              log(`Trade with ${t.name}: -10 PROD, +5 URANIUM`);
-              success = true;
-            }
-            break;
-            
-          case 'alliance':
-            // Forming an alliance now requires 40 INTEL and 10 PRODUCTION.
-            if (player.intel >= 40 && player.production >= 10) {
-              player.intel -= 40;
-              player.production -= 10;
-              player.treaties = player.treaties || {};
-              player.treaties[t.id] = {alliance: true, truceTurns: 999};
-              t.treaties = t.treaties || {};
-              t.treaties[player.id] = {alliance: true, truceTurns: 999};
-              log(`Alliance formed with ${t.name}!`);
-              success = true;
-            }
-            break;
-
-          case 'sanction':
-            if (player.intel >= 15) {
-              player.intel -= 15;
-              t.sanctioned = true;
-              t.sanctionTurns = 5;
-              log(`Trade sanctions imposed on ${t.name} (5 turns)`);
-              success = true;
-            }
-            break;
-
-          // New diplomacy cases
-          case 'pact':
-            // Long non‑aggression pact: 5 turns of mutual truce at cost of 15 intel
-            if (player.intel >= 15) {
-              player.intel -= 15;
-              player.treaties = player.treaties || {};
-              player.treaties[t.id] = {truceTurns: 5};
-              t.treaties = t.treaties || {};
-              t.treaties[player.id] = {truceTurns: 5};
-              log(`Non‑aggression pact with ${t.name} (5 turns)`);
-              success = true;
-            }
-            break;
-          case 'aid':
-            // Spend production to reduce target instability
-            if (player.production >= 20) {
-              player.production -= 20;
-              t.instability = Math.max(0, (t.instability || 0) - 10);
-              log(`Economic aid sent to ${t.name}: -10 instability`);
-              success = true;
-            }
-            break;
-          case 'propaganda':
-            // Spend intel to drain target's intel and gain some influence back
-            if (player.intel >= 15) {
-              player.intel -= 15;
-              t.intel = Math.max(0, (t.intel || 0) - 10);
-              player.intel += 5;
-              log(`Propaganda campaign against ${t.name}: drained 10 intel, gained 5 intel`);
-              success = true;
-            }
-            break;
-
-          case 'env':
-            // Environmental treaty: require both production and intel.  Apply
-            // a moderate debuff on the target's production and uranium
-            // income for multiple turns.  See productionPhase() for effect.
-            if (player.production >= 15 && player.intel >= 60) {
-              player.production -= 15;
-              player.intel -= 60;
-              t.environmentPenaltyTurns = (t.environmentPenaltyTurns || 0) + 5;
-              log(`Environmental treaty with ${t.name}: production/uranium reduced for 5 turns`);
-              success = true;
-            }
-            break;
-        }
-        
+        const success = performDiplomaticAction(player, t, mode);
         if (success) {
           updateDisplay();
           consumeAction();
@@ -5179,20 +5214,74 @@ function selectTarget(title, callback) {
 function consumeAction() {
   S.actionsRemaining--;
   updateDisplay();
-  
+
   if (S.actionsRemaining <= 0) {
     S.overlay={text:'NEXT ROUND', ttl:1000};
     setTimeout(endTurn, 500);
   }
 }
 
+// AI diplomacy helper: returns true if an action was performed
+function aiDiplomacy(n) {
+  const threatEntries = Object.entries(n.threats || {}).sort((a, b) => b[1] - a[1]);
+  const enemy = threatEntries.length ? nations.find(t => t.id === threatEntries[0][0]) : null;
+
+  if (enemy) {
+    if (n.intel >= 15 && Math.random() < 0.3) {
+      if (performDiplomaticAction(n, enemy, 'sanction')) return true;
+    }
+    if (n.intel >= 15 && Math.random() < 0.3) {
+      if (performDiplomaticAction(n, enemy, 'propaganda')) return true;
+    }
+    if (!(n.treaties?.[enemy.id]?.truceTurns > 0) && n.intel >= 15 && Math.random() < 0.2) {
+      if (performDiplomaticAction(n, enemy, 'pact')) return true;
+    }
+  }
+
+  const allyNeedingAid = nations.find(t => n.treaties?.[t.id]?.alliance && (t.instability || 0) > 15);
+  if (allyNeedingAid && n.production >= 20 && Math.random() < 0.4) {
+    if (performDiplomaticAction(n, allyNeedingAid, 'aid')) return true;
+  }
+
+  return false;
+}
+
 /// ============ AI TURN ============
 function aiTurn(n) {
   S.overlay={text:'AI: '+(n.leader||n.name), ttl:800};
   if (n.population <= 0) return;
-  
+
   maybeBanter(n, 0.3);
-  
+
+  // --- Diplomacy Evaluation ---
+  // If this nation feels threatened and has the resources, attempt to form
+  // an alliance with another nation that shares its enemy.  This adds a layer
+  // of strategic diplomacy instead of random pacts.
+  const threatEntries = Object.entries(n.threats || {}).sort((a, b) => b[1] - a[1]);
+  if (threatEntries.length > 0) {
+    const [enemyId, threatVal] = threatEntries[0];
+    const enemy = nations.find(t => t.id === enemyId);
+    // Only consider alliances when the threat is significant and resources allow.
+    if (threatVal > 20 && enemy) {
+      const potentialAllies = nations.filter(t => t !== n && t.id !== enemyId && t.population > 0 && !n.treaties?.[t.id]?.alliance);
+      if (potentialAllies.length > 0 && n.intel >= 40 && n.production >= 10) {
+        // Score potential allies by shared threat toward the enemy and their stance
+        const score = t => (t.threats?.[enemyId] || 0) - (t.threats?.[n.id] || 0) + (t.ai === 'defensive' ? 5 : 0);
+        potentialAllies.sort((a, b) => score(b) - score(a));
+        const ally = potentialAllies[0];
+        if (score(ally) > 0 && Math.random() < 0.6) {
+          if (performDiplomaticAction(n, ally, 'alliance')) {
+            maybeBanter(n, 0.4, 'diplomacy');
+            return;
+          }
+        }
+      }
+    }
+  }
+
+  // If no alliance formed, attempt other diplomatic actions
+  if (aiDiplomacy(n)) return;
+
   const r = Math.random();
   // Aggression modifiers adjust the baseline probability of launching an attack.
   // Aggressive AI is more likely to strike, defensive less so.  New
@@ -5251,50 +5340,117 @@ function aiTurn(n) {
       }
     }
   } else if (r < 0.5) {
+    // Build using the same options available to the player
+    const opts = [];
+
     if (canAfford(n, COSTS.missile)) {
-      pay(n, COSTS.missile);
-      n.missiles++;
-      log(`${n.name} builds missile`);
+      opts.push(() => { pay(n, COSTS.missile); n.missiles++; log(`${n.name} builds missile`); });
+    }
+    if (canAfford(n, COSTS.bomber)) {
+      opts.push(() => { pay(n, COSTS.bomber); n.bombers = (n.bombers || 0) + 1; log(`${n.name} builds bomber`); });
+    }
+    [10,20,50,100].forEach(mt => {
+      if (mt === 100 && !n.researched?.mt100) return;
+      const cost = COSTS[`warhead_${mt}`];
+      if (canAfford(n, cost)) {
+        opts.push(() => {
+          pay(n, cost);
+          n.warheads = n.warheads || {};
+          n.warheads[mt] = (n.warheads[mt] || 0) + 1;
+          log(`${n.name} builds ${mt}MT warhead`);
+        });
+      }
+    });
+    if (n.researched?.submarines && canAfford(n, COSTS.submarine)) {
+      opts.push(() => {
+        pay(n, COSTS.submarine);
+        n.submarines = (n.submarines || 0) + 1;
+        log(`${n.name} builds submarine`);
+      });
+    }
+
+    if (opts.length) {
+      const action = opts[Math.floor(Math.random() * opts.length)];
+      action();
       maybeBanter(n, 0.2, 'build');
-    } else if (canAfford(n, COSTS.warhead_20)) {
-      pay(n, COSTS.warhead_20);
-      n.warheads = n.warheads || {};
-      n.warheads[20] = (n.warheads[20] || 0) + 1;
-      log(`${n.name} builds 20MT warhead`);
     }
   } else if (r < 0.7) {
     if (canAfford(n, COSTS.defense)) {
       pay(n, COSTS.defense);
       n.defense += 2;
       log(`${n.name} upgrades defense`);
-    } else if (n.cities < 3) {
+    } else {
       const cityCost = getCityCost(n);
       if (canAfford(n, cityCost)) {
         pay(n, cityCost);
         n.cities++;
-        
+
         // Add visual city for AI too
         const spread = 6;
         const angle = Math.random() * Math.PI * 2;
         const newLat = n.lat + Math.sin(angle) * spread;
         const newLon = n.lon + Math.cos(angle) * spread;
         CityLights.addCity(newLat, newLon, 1.0);
-        
+
         log(`${n.name} builds city #${n.cities}`);
         maybeBanter(n, 0.3, 'build');
       }
     }
-  } else if (r < 0.85 && canAfford(n, COSTS.immigration_skilled)) {
-    const targets = nations.filter(t => t !== n && t.population > 0);
-    if (targets.length > 0) {
-      const target = targets[Math.floor(Math.random() * targets.length)];
-      const amt = Math.floor(n.population * 0.05);
-      n.population -= amt;
-      target.population += amt;
-      target.instability = (target.instability || 0) + 15;
-      pay(n, COSTS.immigration_skilled);
-      log(`${n.name} sends immigrants to ${target.name}`);
-      maybeBanter(n, 0.5, 'immigration');
+    } else if (r < 0.85 && canAfford(n, COSTS.immigration_skilled)) {
+      const targets = nations.filter(t => t !== n && t.population > 1);
+      if (targets.length > 0) {
+        const target = targets[Math.floor(Math.random() * targets.length)];
+        pay(n, COSTS.immigration_skilled);
+        const base = Math.floor(Math.random() * 3) + 1;
+        let chance = 60;
+        chance = Math.min(95, Math.max(5, chance));
+        const roll = Math.random() * 100;
+        let amt = 0;
+        if (roll >= 95) {
+          amt = Math.ceil(base * 1.5);
+          target.instability = (target.instability || 0) + 25;
+        } else if (roll >= chance) {
+          amt = base;
+          target.instability = (target.instability || 0) + 15;
+        } else if (roll >= 40) {
+          amt = Math.max(1, Math.floor(base / 2));
+          target.instability = (target.instability || 0) + 5;
+        } else if (roll < 25) {
+          n.instability = (n.instability || 0) + 10;
+        }
+        amt = Math.min(amt, target.population - 1);
+        if (amt > 0) {
+          target.population -= amt;
+          n.population += amt;
+          addImmigrationIcon(n.lon ?? 0, n.lat ?? 0, n.color, false);
+          log(`${n.name} steals ${amt}M skilled from ${target.name}`);
+        } else {
+          log(`${n.name} failed immigration op against ${target.name}`);
+        }
+        maybeBanter(n, 0.5, 'immigration');
+      }
+    } else if (r < 0.95) {
+    // Research technologies following the same tree as the player
+    const order = ['better_missiles', 'radar', 'miniaturization', 'mirv', 'stealth', 'emp', 'submarines', 'laser', 'mt100'];
+    const canResearch = tech => {
+      if (tech === 'mirv') return n.researched?.better_missiles;
+      if (tech === 'submarines') return n.researched?.mirv;
+      if (tech === 'laser') return n.researched?.radar;
+      return true;
+    };
+    const choices = order.filter(t => !n.researched?.[t] && n.intel >= TECH_COSTS[t] && canResearch(t));
+    if (choices.length) {
+      const tech = choices[Math.floor(Math.random() * choices.length)];
+      n.intel -= TECH_COSTS[tech];
+      n.researched = n.researched || {};
+      n.researched[tech] = true;
+      if (tech === 'radar') n.defense += 1;
+      else if (tech === 'laser') n.defense += 3;
+      else if (tech === 'mt100') {
+        n.warheads = n.warheads || {};
+        n.warheads[100] = (n.warheads[100] || 0) + 2;
+      }
+      log(`${n.name} researches ${tech.replace(/_/g, ' ')}`);
     }
   } else {
     if (Math.random() < 0.5 && S.defcon > 1) {
@@ -5399,9 +5555,12 @@ function endGame(victory, message) {
   `;
   
   document.getElementById('endGame').style.display = 'flex';
-  
+
+  const playerObj = PlayerManager.get();
+  const playerName = S.playerName || S.selectedLeader || playerObj?.leader || 'PLAYER';
+  const doctrine = playerObj?.doctrine || S.selectedDoctrine || 'NONE';
   const highscores = JSON.parse(Storage.getItem('highscores') || '[]');
-  highscores.push({score, turns: S.turn, date: new Date().toISOString()});
+  highscores.push({score, turns: S.turn, date: new Date().toISOString(), name: playerName, doctrine});
   highscores.sort((a, b) => b.score - a.score);
   Storage.setItem('highscores', JSON.stringify(highscores.slice(0, 10)));
 }
@@ -5648,9 +5807,11 @@ window.addEventListener('DOMContentLoaded', () => {
       } else {
         highscores.forEach((score, i) => {
           const date = new Date(score.date).toLocaleDateString();
-          html += `<div style="display:flex;justify-content:space-between;padding:8px;border-bottom:1px solid rgba(0,255,255,0.2)">
+          html += `<div style="display:flex;justify-content:space-between;flex-wrap:wrap;padding:8px;border-bottom:1px solid rgba(0,255,255,0.2)">
             <span style="color:var(--green)">#${i+1}</span>
             <span style="color:var(--cyan)">${Math.floor(score.score)} pts</span>
+            <span style="color:var(--mag)">${score.name || '—'}</span>
+            <span style="color:var(--yellow)">${(score.doctrine || '—').toUpperCase()}</span>
             <span style="color:var(--mag)">Turn ${score.turns}</span>
             <span style="color:var(--amber);font-size:10px">${date}</span>
           </div>`;
