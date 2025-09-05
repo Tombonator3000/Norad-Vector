@@ -4417,7 +4417,7 @@ function actImmigration() {
   let html = '<div class="modal-grid">';
   html += `<button class="modal-btn" data-k="skilled">
     SKILLED IMMIGRATION<br>
-        <small>Steal 5% pop from target → you, +15 instab (target), +1 def (you)<br>Cost: 10 PROD, 5 INTEL</small>
+        <small>Steal 1-3M pop (60% base success)<br>Cost: 10 PROD, 5 INTEL</small>
   </button>`;
   html += `<button class="modal-btn" data-k="mass">
     MASS IMMIGRATION<br>
@@ -4453,24 +4453,42 @@ function actImmigration() {
         switch(mode) {
           case 'skilled':
             if (canAfford(player, COSTS.immigration_skilled)) {
-              const intelDiff = (player.intel || 0) - (t.intel || 0);
-              let pct = 0.05 + intelDiff * 0.0002;
-              pct = Math.min(0.07, Math.max(0.03, pct));
-              const amt = Math.max(1, Math.floor(t.population * pct));
-              t.population = Math.max(0, t.population - amt);
-              player.population += amt;
-              player.immigrants = (player.immigrants || 0) + amt;
-              t.emigrants = (t.emigrants || 0) + amt;
-
-              t.instability = (t.instability || 0) + 15;
-              player.defense += 1;
-
               pay(player, COSTS.immigration_skilled);
-              log(`Skilled immigration: +${amt}M from ${t.name} (+15 instab to ${t.name}, +1 def to you)`);
-              success = true;
-
-              addImmigrationIcon(player.lon ?? 0, player.lat ?? 0, player.color, true);
-              AudioSys.playSFX('immigration');
+              const base = Math.floor(Math.random() * 3) + 1; // 1-3M base flow
+              let chance = 60;
+              chance = Math.min(95, Math.max(5, chance));
+              const roll = Math.random() * 100;
+              let amt = 0;
+              if (roll >= 95) { // critical success
+                amt = Math.ceil(base * 1.5);
+                t.instability = (t.instability || 0) + 25;
+                t.culture = Math.max(0, (t.culture || 0) - 1);
+                log(`Critical skilled immigration: +${amt}M from ${t.name}`);
+              } else if (roll >= chance) { // normal success
+                amt = base;
+                t.instability = (t.instability || 0) + 15;
+                log(`Skilled immigration success: +${amt}M from ${t.name}`);
+              } else if (roll >= 40) { // partial
+                amt = Math.max(1, Math.floor(base / 2));
+                t.instability = (t.instability || 0) + 5;
+                log(`Partial skilled immigration: +${amt}M from ${t.name}`);
+              } else if (roll >= 25) { // failure
+                log('Skilled immigration failed; no one moved.');
+              } else { // backfire
+                player.instability = (player.instability || 0) + 10;
+                log('Immigration backfired! +10 instability');
+              }
+              amt = Math.min(amt, t.population - 1);
+              if (amt > 0) {
+                t.population -= amt;
+                player.population += amt;
+                player.immigrants = (player.immigrants || 0) + amt;
+                player.migrantsThisTurn = (player.migrantsThisTurn || 0) + amt;
+                player.migrantsTotal = (player.migrantsTotal || 0) + amt;
+                addImmigrationIcon(player.lon ?? 0, player.lat ?? 0, player.color, false);
+                AudioSys.playSFX('immigration');
+                success = true;
+              }
             }
             break;
             
